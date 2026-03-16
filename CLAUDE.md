@@ -225,17 +225,89 @@ ACL priority is `deny > allow > default`, so a broad deny always beats a narrow 
 ## Bandwidth Test Results
 
 - **Setup:** 200 blocked topics at 1 Hz + 1 allowed (`/chatter_public`) at ~100 Hz
-- **Observation:** ~8 kbit/s on eth0, actual /chatter_public data is ~600 bytes/s
-- **Cause:** Broad `allow_remote_discovery` rule (`@ros2_lv/**`) lets graph queries
-  for all 200 blocked topics cross eth0. Data is blocked but discovery queries leak.
-- **TODO:** Test restricting discovery queries to whitelisted topics only
+- **Baseline (routers only, no topics):** ~0 kbit/s — good
+- **With broad `allow_remote_discovery` (`@ros2_lv/**`):** ~8 kbit/s steady — graph
+  queries for all 200 blocked topics leak through
+- **With narrow discovery (per-topic only):** <1 kbit/s steady — solved
+- **Startup burst problem:** Creating 200 topics generates a burst of Zenoh routing
+  protocol interest declarations that ACL does NOT filter (below ACL layer). On a
+  tc-throttled link (30 kbit/s), this burst queues up and saturates the link for
+  minutes, causing `wait_before_close` transport errors.
+
+## Transport Tuning for Low-Bandwidth Links
+
+Both router configs (A and B) need matching settings:
+- **`compression: true`** — negotiated per-link, reduces wire traffic
+- **`aggregation: { subscribers: ["**"], publishers: ["**"] }`** — reduces
+  declaration messages (aggregates into single wildcard instead of per-topic)
+- **`batch_size: 1400`** — fits single MTU, avoids fragmentation (but affects
+  local TCP too — tradeoff)
+- **`batching.time_limit: 30`** ms — holds messages longer for better packing
+  (adds 30ms latency to ALL messages including local)
+- **`wait_before_close: 60000000`** µs (60s) — prevents transport closure on
+  slow/congested links
+
+## Zenoh Does NOT Have Bandwidth Capping
+
+Only message-level controls exist:
+- **Downsampling:** caps message frequency (Hz), not bytes
+- **Low pass filter:** drops messages above a size limit, not a rate
+- **Congestion control:** reactive (drop/block when queue full), not proactive
+
+For bandwidth limiting, use Linux `tc`:
+- Simple cap: `tc qdisc add dev eth0 root tbf rate 50kbit burst 10kb latency 100ms`
+- QoS with HTB: see `zenoh_confs/tc_setup.bash`
+
+## Critical Limitation: Interest Declaration Burst
+
+**Problem:** When many topics are created, Zenoh's routing protocol sends interest
+declarations for ALL of them over inter-router links. ACL operates at the message
+layer and does NOT filter these transport-level declarations. On a bandwidth-limited
+sat link, this burst can saturate the connection for minutes.
+
+**This is not a problem with zenoh-bridge-ros2dds** because the bridge selectively
+subscribes only to configured topics. But zenoh-bridge-ros2dds has ~200 kbit/s
+constant DDS discovery overhead, which is worse for steady-state.
+
+**Comparison:**
+| | zenoh-bridge-ros2dds | rmw_zenoh + ACL |
+|---|---|---|
+| Steady-state discovery | ~200 kbit/s constant | <1 kbit/s |
+| Startup burst | minimal | problematic on slow links |
+| Topic filtering | built-in | ACL (data + liveliness) |
+
+## Recommended Production Architecture: Two-Router Gateway
+
+To eliminate the interest burst, use a two-router architecture on each island:
+
+```
+[Robot island]
+  200 nodes ←TCP→ local-router (no WAN connection)
+                       ↑ TCP localhost
+              wan-router (separate Zenoh session)
+                 - connects to local-router as client/peer
+                 - connects to GCS via UDP
+                 - only subscribes to whitelisted topics
+                 - never discovers blocked topics
+                 - ACL + downsampling + compression
+                       ↓ UDP
+                   [Iridium sat link]
+                       ↓ UDP
+              [GCS wan-router] ←TCP→ GCS nodes
+```
+
+The wan-router never learns about the 200 blocked topics because it's a separate
+Zenoh session that only subscribes to what it needs. No interest declarations for
+blocked topics, no burst. This is architecturally what zenoh-bridge-ros2dds does
+(a gateway that selectively forwards) but with zero DDS discovery overhead.
+
+**TODO:** Prototype this with a second rmw_zenohd or custom Zenoh app.
 
 ## Next Steps
 
-- **Reduce discovery overhead:** Narrow `allow_remote_discovery` to only whitelisted
-  topic patterns instead of broad `@ros2_lv/**`
-- **Production config:** Replace `interfaces: ["eth0"]` with actual sat modem interface
-  (`ppp0` or similar). Alternatively use `link_protocols: ["udp"]` / `["tcp"]`
+- **Prototype two-router gateway** to eliminate interest burst
+- **Production config:** Replace `interfaces: ["eth0"]` with actual sat modem
+  interface. Use `link_protocols: ["udp"]` / `["tcp"]` in Docker.
 
 ## Open Questions / Risks
 
@@ -256,10 +328,10 @@ ACL priority is `deny > allow > default`, so a broad deny always beats a narrow 
    `link_protocols: ["udp"]` is simpler than interface names. In production with
    the real Iridium interface, `interfaces: ["ppp0"]` (or whatever the sat modem
    presents) may be more appropriate.
-6. **Broad liveliness_query allow:** The graph query split (broad query, narrow
-   token) means the remote side CAN ask about all topics — it just won't get
-   answers for non-whitelisted ones. Measured at ~8 kbit/s overhead with 200
-   blocked topics — NOT negligible for a 50 kbps sat link. Needs narrowing.
+6. **Interest declaration burst:** Zenoh routing protocol sends interest
+   declarations below the ACL layer. On bandwidth-limited links, this can
+   saturate the connection at startup. Two-router gateway architecture is
+   the robust fix.
 
 ## Commands Reference
 

@@ -39,7 +39,7 @@
     /// or different lists for router, peer and client (e.g. endpoints: { router: ["tcp/10.10.10.10:7447"], peer: ["tcp/11.11.11.11:7447"] }).
     ///
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
-    endpoints: ["tcp/container-b:7447"],
+    endpoints: ["udp/container-b:7447"],
 
     /// Global connect configuration,
     /// Accepts a single value or different values for router, peer and client.
@@ -86,7 +86,7 @@
     /// or different lists for router, peer and client (e.g. endpoints: { router: ["tcp/[::]:7447"], peer: ["tcp/[::]:0"] }).
     ///
     /// See https://docs.rs/zenoh/latest/zenoh/config/struct.EndPoint.html
-    endpoints: ["tcp/[::]:7447"],
+    endpoints: ["tcp/[::]:7447", "udp/[::]:7447"],
 
     /// Global listen configuration,
     /// Accepts a single value or different values for router, peer and client.
@@ -329,17 +329,10 @@
   //    ],
   //  },
 
-  //  /// The declarations aggregation strategy.
-  //  aggregation: {
-  //      /// A list of key-expressions for which all included subscribers will be aggregated into.
-  //      subscribers: [
-  //        // key_expression
-  //      ],
-  //      /// A list of key-expressions for which all included publishers will be aggregated into.
-  //      publishers: [
-  //        // key_expression
-  //      ],
-  //  },
+  aggregation: {
+    subscribers: ["**"],
+    publishers: ["**"],
+  },
 
   // /// Namespace prefix.
   // /// If specified, all outgoing key expressions will be automatically prefixed with specified string,
@@ -549,7 +542,7 @@
       /// Compression capabilities are negotiated during session establishment.
       /// If both Zenoh nodes support compression, then compression is activated.
       compression: {
-        enabled: false,
+        enabled: true,
       },
     },
     /// WARNING: multicast communication does not perform any negotiation upon group joining.
@@ -604,7 +597,7 @@
         /// Batch size in bytes is expressed as a 16bit unsigned integer.
         /// Therefore, the maximum batch size is 2^16-1 (i.e. 65535).
         /// The default batch size value is the maximum batch size: 65535.
-        batch_size: 65535,
+        batch_size: 1400,
         /// Each zenoh link has a transmission queue that can be configured
         queue: {
           /// The size of each priority queue indicates the number of batches a given queue can contain.
@@ -639,7 +632,7 @@
               /// ROS setting: unlike DEFAULT_RMW_ZENOH_SESSION_CONFIG.json5, no change here:
               ///              as the router is routing messages to outside the robot, possibly over WiFi,
               ///              keeping a lower value ensure the router is not blocked for too long in case of congestioned WiFi.
-              wait_before_close: 5000000,
+              wait_before_close: 60000000,
             },
           },
           /// Perform batching of messages if they are smaller of the batch_size
@@ -650,7 +643,7 @@
             /// scenario mainly composed of small messages. In other words, batching is activated by the network back-pressure.
             enabled: true,
             /// The maximum time limit (in ms) a message should be retained for batching when back-pressure happens.
-            time_limit: 1,
+            time_limit: 30,
           },
           allocation: {
             /// Mode for memory allocation of batches in the priority queues.
@@ -805,16 +798,10 @@
         key_exprs: ["*/chatter_public/*/*", "*/chatter_public/*/*/@adv/**"],
       },
       {
-        id: "allow_remote_discovery",
+        // All liveliness (tokens + queries) narrowed to whitelisted topics only
+        id: "allow_remote_liveliness",
         permission: "allow",
-        messages: ["liveliness_query", "declare_liveliness_subscriber"],
-        flows: ["egress", "ingress"],
-        key_exprs: ["@ros2_lv/**"],
-      },
-      {
-        id: "allow_remote_tokens",
-        permission: "allow",
-        messages: ["liveliness_token"],
+        messages: ["liveliness_token", "liveliness_query", "declare_liveliness_subscriber"],
         flows: ["egress", "ingress"],
         key_exprs: ["@ros2_lv/*/*/*/*/*/*/*/*/%chatter_public/**"],
       },
@@ -830,8 +817,7 @@
       {
         rules: [
           "allow_remote_data",
-          "allow_remote_discovery",
-          "allow_remote_tokens",
+          "allow_remote_liveliness",
         ],
         subjects: ["remote"],
       },
@@ -841,14 +827,14 @@
     {
       // Downsampling publications ("push" messages, and "reply" in case of TRANSIENT_LOCAL publisher)
       // in egress direction on WiFi interface
-      messages: ["push", "reply"],
+      messages: ["put", "delete", "reply"],
       flows: ["egress"],
       interfaces: ["eth0"],
       rules: [
         // 0.6Hz for the Zenoh key expression used for the "/chatter_public" topic
         {
           key_expr: "*/chatter_public/**",
-          freq: 0.6,
+          freq: 10,
         },
       ],
     },
