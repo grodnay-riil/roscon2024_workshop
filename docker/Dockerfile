@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-action-tutorials-py \
     ros-${ROS_DISTRO}-turtlesim \
     vim \
-    iputils-ping iproute2 && \
+    iputils-ping iproute2 iftop && \
     apt-get autoremove -y && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*

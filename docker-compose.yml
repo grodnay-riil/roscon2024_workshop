@@ -1,0 +1,38 @@
+x-common: &common
+  build: docker/
+  image: zettascaletech/roscon2024_workshop
+  init: true
+  stdin_open: true
+  tty: true
+  environment:
+    - DISPLAY=host.docker.internal:0
+  volumes:
+    - ./zenoh_confs:/ros_ws/zenoh_confs
+  expose:
+    - "7447/tcp"
+    - "7447/udp"
+  networks:
+    - zenoh-net
+  cap_add:
+    - NET_ADMIN
+  command: bash -c "ip link set lo multicast on && exec bash"
+
+services:
+  container-a:
+    <<: *common
+    container_name: container-a
+    hostname: container-a
+
+  container-b:
+    <<: *common
+    container_name: container-b
+    hostname: container-b
+
+  container-c:
+    <<: *common
+    container_name: container-c
+    hostname: container-c
+
+networks:
+  zenoh-net:
+    driver: bridge
